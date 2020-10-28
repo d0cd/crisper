@@ -6,10 +6,26 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-timely = "0.11.1"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-spinach = { path = "../spinach" }
-zmq = "0.9"
+[[bin]]
+name = "crisper-cli"
+path = "src/bin/cli.rs"
 
+[[bin]]
+name = "crisper-server"
+path = "src/bin/server.rs"
+
+[dependencies]
+async-stream = "0.2.1"
+atoi = "0.3.2"
+bytes = "0.6.0"
+structopt = "0.3.14"
+spinach = { path = "../spinach" }
+timely = "0.11.1"
+tokio = { version = "0.3.1", features = ["full"] }
+tracing = "0.1.13"
+tracing-futures = { version = "0.2.3" }
+tracing-subscriber = "0.2.2"
+
+[dev-dependencies]
+# Enable test-utilities in dev mode only. This is mostly for tests.
+tokio = { version = "0.3", features = ["test-util"] }
