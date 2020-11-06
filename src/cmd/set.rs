@@ -10,13 +10,6 @@ use tracing::{debug, instrument};
 /// If `key` already holds a value, it is overwritten, regardless of its type.
 /// Any previous time to live associated with the key is discarded on successful
 /// SET operation.
-///
-/// # Options
-///
-/// Currently, the following options are supported:
-///
-/// * EX `seconds` -- Set the specified expire time, in seconds.
-/// * PX `milliseconds` -- Set the specified expire time, in milliseconds.
 #[derive(Debug)]
 pub struct Set {
     /// the lookup key
@@ -24,21 +17,14 @@ pub struct Set {
 
     /// the value to be stored
     value: Bytes,
-
-    /// When to expire the key
-    expire: Option<Duration>,
 }
 
 impl Set {
     /// Create a new `Set` command which sets `key` to `value`.
-    ///
-    /// If `expire` is `Some`, the value should expire after the specified
-    /// duration.
-    pub fn new(key: impl ToString, value: Bytes, expire: Option<Duration>) -> Set {
+    pub fn new(key: impl ToString, value: Bytes) -> Set {
         Set {
             key: key.to_string(),
             value,
-            expire,
         }
     }
 
@@ -52,10 +38,6 @@ impl Set {
         &self.value
     }
 
-    /// Get the expire
-    pub fn expire(&self) -> Option<Duration> {
-        self.expire
-    }
 
     /// Parse a `Set` instance from a received frame.
     ///
@@ -86,28 +68,12 @@ impl Set {
         // Read the value to set. This is a required field.
         let value = parse.next_bytes()?;
 
-        // The expiration is optional. If nothing else follows, then it is
-        // `None`.
-        let mut expire = None;
-
         // Attempt to parse another string.
         match parse.next_string() {
-            Ok(s) if s == "EX" => {
-                // An expiration is specified in seconds. The next value is an
-                // integer.
-                let secs = parse.next_int()?;
-                expire = Some(Duration::from_secs(secs));
-            }
-            Ok(s) if s == "PX" => {
-                // An expiration is specified in milliseconds. The next value is
-                // an integer.
-                let ms = parse.next_int()?;
-                expire = Some(Duration::from_millis(ms));
-            }
             // Currently, mini-redis does not support any of the other SET
             // options. An error here results in the connection being
             // terminated. Other connections will continue to operate normally.
-            Ok(_) => return Err("currently `SET` only supports the expiration option".into()),
+            Ok(_) => return Err("currently `SET` supports no options".into()),
             // The `EndOfStream` error indicates there is no further data to
             // parse. In this case, it is a normal run time situation and
             // indicates there are no specified `SET` options.
@@ -117,24 +83,7 @@ impl Set {
             Err(err) => return Err(err.into()),
         }
 
-        Ok(Set { key, value, expire })
-    }
-
-    /// Apply the `Set` command to the specified `Db` instance.
-    ///
-    /// The response is written to `dst`. This is called by the server in order
-    /// to execute a received command.
-    #[instrument(skip(self, db, dst))]
-    pub(crate) async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        // Set the value in the shared database state.
-        db.set(self.key, self.value, self.expire);
-
-        // Create a success response and write it to `dst`.
-        let response = Frame::Simple("OK".to_string());
-        debug!(?response);
-        dst.write_frame(&response).await?;
-
-        Ok(())
+        Ok(Set { key, value })
     }
 
     /// Converts the command into an equivalent `Frame`.

@@ -66,25 +66,6 @@ impl Command {
         Ok(command)
     }
 
-    /// Apply the command to the specified `Db` instance.
-    ///
-    /// The response is written to `dst`. This is called by the server in order
-    /// to execute a received command.
-    pub(crate) async fn apply(
-        self,
-        db: &Db,
-        dst: &mut Connection,
-        shutdown: &mut Shutdown,
-    ) -> crate::Result<()> {
-        use Command::*;
-
-        match self {
-            Get(cmd) => cmd.apply(db, dst).await,
-            Set(cmd) => cmd.apply(db, dst).await,
-            Unknown(cmd) => cmd.apply(dst).await,
-        }
-    }
-
     /// Returns the command name
     pub(crate) fn get_name(&self) -> &str {
         match self {
