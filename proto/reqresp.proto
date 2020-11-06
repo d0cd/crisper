@@ -16,6 +16,8 @@ syntax = "proto3";
 
 package crisper.proto.reqresp;
 
+import "lattice.proto";
+
 // An enum to differentiate between different KVS requests.
 enum RequestType {
   // A default type to capture unspecified requests.
@@ -61,7 +63,7 @@ message KeyTuple {
 
   // The lattice type for this key. Only required for server responses and PUT
   // requests.
-  LatticeType lattice_type = 2;
+  crisper.proto.lattice.LatticeType lattice_type = 2;
 
   // The error type specified by the server (see AnnaError).
   AnnaError error = 3;

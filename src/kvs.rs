@@ -1,13 +1,12 @@
 use std::io::prelude::*;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::net::{signal};
-use tokio::sync::{broadcase, mpsc};
 
 use spinach::{Lattice, MergeIntoLattice};
 use spinach::merge::{MaxMerge, MinMerge, MapUnionMerge, DominatingPairMerge};
 
 use timely::dataflow::{InputHandle};
-use timely::dataflow::operators::{ToStream, Filter};
+use timely::dataflow::operators::{ToStream, Filter, Inspect, Probe};
+
+use crisper::proto::reqresp::{RequestType};
 
 
 
@@ -26,16 +25,18 @@ pub async fn run() {
         let mut input = InputHandle::new();
 
     
-        worker.dataflow::<usize,_,_>(|scope| {
-            input.to_stream(scope)
+        worker.dataflow(|scope| {
+            input.to_stream(scope);
         });
 
 
         let context = zmq::Context::new();
-        let request_puller = contet.socker(zmq::PULL).unwrap();
+        let request_puller = context.socket(zmq::PULL).unwrap();
         request_puller.bind("tcp://*:6200").unwrap();
 
-        let round = 0;
+        let mut round = 0;
+
+        let dummy: RequestType = RequestType::Get;
         
         loop {
             // Using poll pattern for multiple sockets even though we only have one
@@ -49,7 +50,8 @@ pub async fn run() {
                 let bytes = request_puller.recv_bytes(0).unwrap();
                 input.send(bytes);
             }
-            input.advance_to(round++);
+            round += 1;
+            input.advance_to(round);
             worker.step();
         }
         

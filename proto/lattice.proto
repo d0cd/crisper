@@ -77,7 +77,7 @@ message MultiKeyCausalValue {
 
   // The mapping from keys to vector clocks for each of the direct causal
   // dependencies this key has.
-  repeated KeyVersion dependencies = 2;
+  repeated crisper.proto.shared.KeyVersion dependencies = 2;
   
   // The set of potentially causally concurrent values for this key.
   repeated bytes values = 3;
