@@ -1,0 +1,93 @@
+//  Copyright 2019 U.C. Berkeley RISE Lab
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+
+syntax = "proto3";
+
+package crisper.proto.lattice;
+
+import "shared.proto";
+
+enum LatticeType { 
+  // No lattice type specified
+  NONE = 0;
+
+  // Last-writer wins lattice
+  LWW = 1;
+
+  // Unordered set lattice
+  SET = 2;
+
+  // Single-key causal lattice
+  SINGLE_CAUSAL = 3;
+
+  // Multi-key causal lattice
+  MULTI_CAUSAL = 4;
+
+  // Ordered-set lattice
+  ORDERED_SET = 5;
+
+  // Priority lattice
+  PRIORITY = 6;
+}
+
+// LATTICE SERIALIZATION
+
+// Serialization of last-write wins lattices.
+message LWWValue {
+  // The last-writer wins timestamp associated with this data.
+  uint64 timestamp = 1;
+  
+  // The actual data stored by this LWWValue.
+  bytes value = 2;
+}
+
+// Serialization of unordered set lattices.
+message SetValue {
+  // An unordered set of values in this lattice.
+  repeated bytes values = 1;
+}
+
+// Serialization of a single-key causal lattice.
+message SingleKeyCausalValue {
+  // The vector clock for this key, which maps from unique client IDs to
+  // monotonically increasing integers.
+  map<string, uint32> vector_clock = 1;
+
+  // The set of values associated with this causal value. There will only be
+  // more than one here if there are multiple causally concurrent updates.
+  repeated bytes values = 2;
+}
+
+// An individual multi-key causal lattice, along with its associated
+// dependencies.
+message MultiKeyCausalValue {
+  // The vector clock associated with this particular key.
+  map<string, uint32> vector_clock = 1;
+
+  // The mapping from keys to vector clocks for each of the direct causal
+  // dependencies this key has.
+  repeated KeyVersion dependencies = 2;
+  
+  // The set of potentially causally concurrent values for this key.
+  repeated bytes values = 3;
+}
+
+// Serialization of lowest-priority-wins lattices.
+message PriorityValue {
+  // The priority associated with this data
+  double priority = 1;
+  
+  // The actual data stored by this PriorityValue
+  bytes value = 2;
+}

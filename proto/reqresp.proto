@@ -14,7 +14,7 @@
 
 syntax = "proto3";
 
-import "shared.proto";
+package crisper.proto.reqresp;
 
 // An enum to differentiate between different KVS requests.
 enum RequestType {
@@ -28,28 +28,6 @@ enum RequestType {
   PUT = 2;
 }
 
-enum LatticeType { 
-  // No lattice type specified
-  NONE = 0;
-
-  // Last-writer wins lattice
-  LWW = 1;
-
-  // Unordered set lattice
-  SET = 2;
-
-  // Single-key causal lattice
-  SINGLE_CAUSAL = 3;
-
-  // Multi-key causal lattice
-  MULTI_CAUSAL = 4;
-
-  // Ordered-set lattice
-  ORDERED_SET = 5;
-
-  // Priority lattice
-  PRIORITY = 6;
-}
 
 enum AnnaError {
   // The request did not have an error.
@@ -100,6 +78,7 @@ message KeyTuple {
   bool invalidate = 6;
 }
 
+
 // An individual GET or PUT request; each request can batch multiple keys.
 message KeyRequest {
   // The type of this request (see RequestType).
@@ -114,6 +93,23 @@ message KeyRequest {
   // A client-specific ID used to match asynchronous requests with responses.
   string request_id = 4;
 }
+
+
+// A request to the routing tier to retrieve server addresses corresponding to
+// individual keys.
+message KeyAddressRequest {
+  // The IP-port pair at which the client will await a response.
+  string response_address = 1;
+
+  // The names of the requested keys.
+  repeated string keys = 2;
+
+  // A unique ID used by the client to match asynchornous requests with
+  // responses.
+  string request_id = 3;
+}
+
+
 
 // A response to a KeyRequest. 
 message KeyResponse {
@@ -135,19 +131,6 @@ message KeyResponse {
   AnnaError error = 4;
 }
 
-// A request to the routing tier to retrieve server addresses corresponding to
-// individual keys.
-message KeyAddressRequest {
-  // The IP-port pair at which the client will await a response.
-  string response_address = 1;
-
-  // The names of the requested keys.
-  repeated string keys = 2;
-
-  // A unique ID used by the client to match asynchornous requests with
-  // responses.
-  string request_id = 3;
-}
 
 // A 1-to-1 response from the routing tier for individual KeyAddressRequests.
 message KeyAddressResponse {
@@ -170,55 +153,4 @@ message KeyAddressResponse {
   // A unique ID used by the client to match asynchronous requests with
   // responses.
   string response_id = 3;
-}
-
-// LATTICE SERIALIZATION
-
-// Serialization of last-write wins lattices.
-message LWWValue {
-  // The last-writer wins timestamp associated with this data.
-  uint64 timestamp = 1;
-  
-  // The actual data stored by this LWWValue.
-  bytes value = 2;
-}
-
-// Serialization of unordered set lattices.
-message SetValue {
-  // An unordered set of values in this lattice.
-  repeated bytes values = 1;
-}
-
-// Serialization of a single-key causal lattice.
-message SingleKeyCausalValue {
-  // The vector clock for this key, which maps from unique client IDs to
-  // monotonically increasing integers.
-  map<string, uint32> vector_clock = 1;
-
-  // The set of values associated with this causal value. There will only be
-  // more than one here if there are multiple causally concurrent updates.
-  repeated bytes values = 2;
-}
-
-// An individual multi-key causal lattice, along with its associated
-// dependencies.
-message MultiKeyCausalValue {
-  // The vector clock associated with this particular key.
-  map<string, uint32> vector_clock = 1;
-
-  // The mapping from keys to vector clocks for each of the direct causal
-  // dependencies this key has.
-  repeated KeyVersion dependencies = 2;
-  
-  // The set of potentially causally concurrent values for this key.
-  repeated bytes values = 3;
-}
-
-// Serialization of lowest-priority-wins lattices.
-message PriorityValue {
-  // The priority associated with this data
-  double priority = 1;
-  
-  // The actual data stored by this PriorityValue
-  bytes value = 2;
 }

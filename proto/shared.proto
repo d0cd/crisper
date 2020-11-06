@@ -14,6 +14,8 @@
 
 syntax = "proto3";
 
+package crisper.proto.shared;
+
 // An arbitrary set of strings; used for a variety of purposes across the
 // system.
 message StringSet {
