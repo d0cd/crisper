@@ -1,12 +1,11 @@
-use std::io::prelude::*;
+use spinach::{Lattice, };
+use spinach::merge::{MaxMerge, MinMerge, DominatingPairMerge};
 
-use spinach::{Lattice, MergeIntoLattice};
-use spinach::merge::{MaxMerge, MinMerge, MapUnionMerge, DominatingPairMerge};
+use timely::dataflow::operators::{Map, Capability};
+use timely::dataflow::operators::generic::operator::source;
+use timely::scheduling::Scheduler;
 
-use timely::dataflow::{InputHandle};
-use timely::dataflow::operators::{ToStream, Filter, Inspect, Probe};
-
-use crisper::proto::reqresp::{RequestType};
+use crisper::proto::reqresp::{KeyRequest};
 
 
 
@@ -18,43 +17,53 @@ type VersionedString = Lattice<
     DominatingPairMerge>;
 
 
-pub async fn run() {
+pub fn run() {
     timely::execute_from_args(std::env::args(), |worker| {
 
-        // create input handle
-        let mut input = InputHandle::new();
+        worker.dataflow::<usize,_,_>(|scope| {
+            source(scope, "ZMQPullSocket", |mut capability: Capability<_>, info| {
+               
+                let activator = scope.activator_for(&info.address[..]);
 
-    
-        worker.dataflow(|scope| {
-            input.to_stream(scope);
+                let context = zmq::Context::new();
+                let request_puller = context.socket(zmq::PULL).unwrap();
+                request_puller.bind("tcp://*:6200").unwrap();
+
+                
+                move |output| {
+
+                    // Using poll pattern for multiple sockets even though we only have one
+                    let mut items = [
+                        request_puller.as_poll_item(zmq::POLLIN),
+                    ];
+
+                    // Timeout of 10ms
+                    zmq::poll(&mut items, 10).unwrap();
+                    if items[0].is_readable() {
+                        let bytes = request_puller.recv_bytes(0).unwrap();
+                        let time = capability.time().clone();
+                        let mut session = output.session(&capability);
+
+                        // downgrade capability to current time 
+                        session.give(bytes);
+                        capability.downgrade(&(time + 1));
+                        activator.activate();
+                    }
+
+                }
+            })
+            // Convert byte stream into a stream of requests; TODO: How to safely handle bad
+            // requests?
+            .map::<KeyRequest,_>(|bytes: Vec<u8>| {
+                let req : KeyRequest = prost::Message::decode(bytes.as_slice()).unwrap();
+                req
+            });
+                
         });
 
-
-        let context = zmq::Context::new();
-        let request_puller = context.socket(zmq::PULL).unwrap();
-        request_puller.bind("tcp://*:6200").unwrap();
-
-        let mut round = 0;
-
-        let dummy: RequestType = RequestType::Get;
         
-        loop {
-            // Using poll pattern for multiple sockets even though we only have one
-            let mut items = [
-                request_puller.as_poll_item(zmq::POLLIN),
-            ];
-            // Timeout of 10ms
-            zmq::poll(&mut items, 10).unwrap();
-
-            if items[0].is_readable() {
-                let bytes = request_puller.recv_bytes(0).unwrap();
-                input.send(bytes);
-            }
-            round += 1;
-            input.advance_to(round);
-            worker.step();
-        }
-        
+        // TODO: Step the worker
+                
     }).unwrap();
 }
 
