@@ -5,8 +5,9 @@ use prost::Message;
 
 use std::collections::HashMap;
 
+use timely::dataflow::InputHandle;
 use timely::dataflow::channels::pact::Pipeline;
-use timely::dataflow::operators::{Map, Capability};
+use timely::dataflow::operators::{Input, Map, Capability, Inspect};
 use timely::dataflow::operators::generic::operator::{source};
 use timely::dataflow::operators::generic::operator::Operator;
 use timely::scheduling::Scheduler;
@@ -20,42 +21,53 @@ use crisper::lattice::{LWWKVS};
 
 pub fn run() {
     timely::execute_from_args(std::env::args(), |worker| {
+        let context = zmq::Context::new();
+        let request_puller = context.socket(zmq::PULL).unwrap();
+        request_puller.bind("tcp://*:6666").unwrap();
+
+        // Using poll pattern for multiple sockets even though we only have one
+        let mut items = [
+            request_puller.as_poll_item(zmq::POLLIN),
+        ];
+
+
+
+        let mut input = InputHandle::new();
 
         worker.dataflow::<usize,_,_>(|scope| {
 
-            let context = zmq::Context::new();
+            //let context = zmq::Context::new();
 
-            source(scope, "ZMQPullSocket", |mut capability: Capability<_>, info| {
-               
-                let activator = scope.activator_for(&info.address[..]);
+            //source(scope, "ZMQPullSocket", |mut capability: Capability<_>, info| {
+            //   
+            //    let activator = scope.activator_for(&info.address[..]);
 
-                let request_puller = context.socket(zmq::PULL).unwrap();
-                request_puller.bind("tcp://*:6200").unwrap();
-                println!("Listening on port 6200...");
-                
-                move |output| {
+            //    let request_puller = context.socket(zmq::PULL).unwrap();
+            //    request_puller.bind("tcp://*:6666").unwrap();
+            //    
+            //    move |output| {
 
-                    // Using poll pattern for multiple sockets even though we only have one
-                    let mut items = [
-                        request_puller.as_poll_item(zmq::POLLIN),
-                    ];
+            //        // Using poll pattern for multiple sockets even though we only have one
+            //        let mut items = [
+            //            request_puller.as_poll_item(zmq::POLLIN),
+            //        ];
 
-                    // Timeout of 10ms
-                    println!("Checking for new requests...");
-                    zmq::poll(&mut items, 10).unwrap();
-                    if items[0].is_readable() {
-                        let bytes = request_puller.recv_bytes(0).unwrap();
-                        let time = capability.time().clone();
-                        let mut session = output.session(&capability);
+            //        // Timeout of 10ms
+            //        zmq::poll(&mut items, 10).unwrap();
+            //        if items[0].is_readable() {
+            //            let bytes = request_puller.recv_bytes(0).unwrap();
+            //            let time = capability.time().clone();
+            //            let mut session = output.session(&capability);
 
-                        // downgrade capability to current time 
-                        session.give(bytes);
-                        capability.downgrade(&(time + 1));
-                        activator.activate();
-                    }
+            //            // downgrade capability to current time 
+            //            session.give(bytes);
+            //            capability.downgrade(&(time + 1));
+            //            activator.activate();
+            //        }
 
-                }
-            })
+            //    }
+            //})
+            scope.input_from(&mut input)
             // Convert byte stream into a stream of requests; TODO: How to safely handle bad
             // requests?
             .map::<KeyRequest,_>(|bytes: Vec<u8>| {
@@ -69,6 +81,7 @@ pub fn run() {
 
                 // TODO: Think about using a subscope in the dataflow
                 // TODO: Various consistency levels (maybe we don't need for this experiment)
+                let resp_addr = req.response_address.clone();
                 let resp : Option<KeyResponse> = match req.r#type {
                     // RtUnspecified
                     0 => None, // TODO: Log Unknown request type
@@ -79,7 +92,7 @@ pub fn run() {
                     // Any other value is not allowd
                     _ => None
                 };
-                resp
+                (resp_addr, resp)
             })
             // Send the response
             .sink(Pipeline, "ZMQPushSocket", move |input| {
@@ -88,26 +101,41 @@ pub fn run() {
                 while let Some((_, data)) = input.next() {
                     for datum in data.iter() {
                         match datum {
-                            Some(resp) => {
+                            (resp_addr, Some(resp)) => {
                                 // Encode the message
                                 let mut buf: Vec<u8> = Vec::new();
                                 resp.encode(&mut buf).unwrap();
+                                println!("Sending to addr: {}", resp.response_id.as_str());
                                 
                                 let response_pusher = context.socket(zmq::PUSH).unwrap();
-                                response_pusher.connect(resp.response_id.as_str()).unwrap();
+                                response_pusher.connect(resp_addr).unwrap();
                                 response_pusher.send(buf, 0).unwrap();
                             }
-                            None => ()
+                            (_, None) => ()
                         }
                     }
                 }
             })
         });
 
-        
-        // Step the worker 
-        worker.step_while(|| true);
                 
+
+        
+        let mut time = 0;
+
+        loop {
+            // Timeout of 10ms
+            zmq::poll(&mut items, 100).unwrap();
+            if items[0].is_readable() {
+                let bytes = request_puller.recv_bytes(0).unwrap();
+
+                // downgrade capability to current time 
+                input.send(bytes);
+                time = time + 1;
+                input.advance_to(time);
+                worker.step();
+            }
+        }
     }).unwrap();
 }
 
@@ -151,23 +179,13 @@ fn process_put(kvs: &mut LWWKVS, req: KeyRequest) -> KeyResponse {
     let mut resp_tuples: Vec<KeyTuple> = Vec::new();
 
     for key_tuple in req.tuples {
+        let lww_val: LwwValue = prost::Message::decode(key_tuple.payload.as_slice()).unwrap();
         if kvs.contains_key(&key_tuple.key) {
             let existing_lattice = kvs.get_mut(&key_tuple.key).unwrap();
-            let lww_val = LwwValue {
-                timestamp: existing_lattice.reveal().timestamp + 1,
-                value: key_tuple.payload,
-            };
             let new_lattice: Lattice<LwwValue, MaxMerge> = Lattice::new(lww_val);
             existing_lattice.merge(new_lattice);
         } else {
-            let new_lattice: Lattice<LwwValue, MaxMerge> = Lattice::new(
-                LwwValue {
-                    timestamp: 0,
-                    value: key_tuple.payload,
-                }
-            );
-            
-            kvs.insert(key_tuple.key.clone(), new_lattice);
+            kvs.insert(key_tuple.key.clone(), Lattice::new(lww_val));
         }
         // TODO: Could we send back an empty string so that we don't need to clone
         resp_tuples.push(KeyTuple {
