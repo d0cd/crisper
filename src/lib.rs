@@ -9,3 +9,6 @@ pub mod proto {
         include!(concat!(env!("OUT_DIR"), "/crisper.proto.shared.rs"));
     }
 }
+
+pub mod lattice;
+
