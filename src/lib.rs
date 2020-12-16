@@ -11,4 +11,5 @@ pub mod proto {
 }
 
 pub mod lattice;
+pub mod socketcache;
 

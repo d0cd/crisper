@@ -11,11 +11,14 @@ async-stream = "0.2.1"
 atoi = "0.3.2"
 bytes = "0.6.0"
 prost = "0.6.0"
+serde = { version = "1.0", features = ["derive"] }
 structopt = "0.3.14"
 spinach = { path = "../spinach" }
-timely = "0.11.1"
+timely = { version = "0.11.1", features = ["bincode"] }
 zmq = "0.9"
 
 [build-dependencies]
 prost-build = { version = "0.6.0" }
+serde = { version = "1.0", features = ["derive"] }
+
 
