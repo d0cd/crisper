@@ -50,11 +50,10 @@ pub fn run() {
         ];
 
 
-
         let mut input = InputHandle::new();
 
         worker.dataflow::<usize,_,_>(|scope| {
-            
+
 
             let request_stream = scope.input_from(&mut input)
             // Convert byte stream into a stream of requests; TODO: How to safely handle bad
@@ -66,12 +65,11 @@ pub fn run() {
 
             let (gossip_handle, gossip_stream) = scope.feedback(1);
 
-            
-
             // Serve the request
             let (request_branch, gossip_branch) = request_stream
-                .binary(&gossip_stream, Pipeline, Pipeline, "GossipAndRequestService", |default_cap, _info| {
+                .binary(&gossip_stream, Pipeline, Pipeline, "GossipAndRequestService", |cap, _info| {
 
+                    let mut delta: Lattice<LWWKVS, MapUnionMerge> = Lattice::new(HashMap::new());
                     let mut lww_kvs: Lattice<LWWKVS, MapUnionMerge> = Lattice::new(HashMap::new());
 
                     let mut req_vec    = Vec::new();
@@ -80,21 +78,24 @@ pub fn run() {
                     move |request_input, gossip_input, output| {
 
                         // Drain gossip_input and merge state
-                        gossip_input.for_each(|time, data| {
+                        gossip_input.for_each(|_, data| {
                             data.swap(&mut gossip_vec);
-                            let mut session = output.session(&time);
                             for state in gossip_vec.drain(..) {
-                                println!("Checking gossip input");
                                 if let Some((index, lat)) = state {
-                                    println!("Received state from worker: {}", index);
-                                    // TODO: Don't need to merge your own state
-                                    lww_kvs.merge(lat);
+                                    if index != worker_index {
+                                        println!("Received state from: {}", index);
+                                        let first = Instant::now();
+                                        lww_kvs.merge(lat);
+                                        let second = Instant::now();
+                                        println!("Merged state from: {}, took {}", index, second.duration_since(first).as_millis());
+                                    }
                                 }
                             }
-                            session.give(BinaryOutput::Gossip(worker_index, lww_kvs.clone()));
                         });
 
+                        
                         request_input.for_each(|time, data| {
+
                             data.swap(&mut req_vec);
                             let mut session = output.session(&time);
                             for req in req_vec.drain(..) {
@@ -103,11 +104,17 @@ pub fn run() {
                                 let resp_addr = req.response_address.clone();
                                 let resp : Option<KeyResponse> = match req.r#type {
                                     // RtUnspecified
-                                    0 => None, // TODO: Log Unknown request type
+                                    0 => {
+                                        session.give(BinaryOutput::Gossip(worker_index, delta.clone()));
+                                        delta = Lattice::new(HashMap::new());
+                                        None // TODO: Log Unknown request type
+                                    }
                                     // Get 
                                     1 => Some(process_get(&lww_kvs.reveal(), req)),
                                     // Put
-                                    2 => Some(process_put(&mut lww_kvs, req)),
+                                    2 => {
+                                        Some(process_put(&mut lww_kvs, &mut delta, req))
+                                    }
                                     // Any other value is not allowd
                                     _ => None
                                 };
@@ -117,15 +124,17 @@ pub fn run() {
                     }
                 })
                 .branch(|_time, bin_out| match bin_out {
-                    BinaryOutput::Gossip(index, lat) => true,
+                    BinaryOutput::Gossip(_, _) => true,
                     _ => false
                 });
 
             // Broadcast state to other workers
             gossip_branch
-                .map(|bin_out: BinaryOutput| match bin_out {
-                    BinaryOutput::Gossip(index, lat) => Some((index, lat)),
-                    _ => None
+                .map(|bin_out: BinaryOutput|  {
+                    match bin_out {
+                        BinaryOutput::Gossip(index, lat) => Some((index, lat)),
+                        _ => None
+                    }
                 })
                 .broadcast()
                 .connect_loop(gossip_handle);
@@ -152,20 +161,33 @@ pub fn run() {
 
                 
         let mut time = 0;
-        let mut last = Instant::now();
+        let mut last_advance = Instant::now();
+        let mut last_gossip = Instant::now();
         loop {
             // Timeout of 10ms
             zmq::poll(&mut items, 10).unwrap();
             if items[0].is_readable() {
                 let bytes = request_puller.recv_bytes(0).unwrap();
-
-                // downgrade capability to current time 
                 input.send(bytes);
             }
-            if Instant::now().duration_since(last).as_millis() > 100 {
+            if Instant::now().duration_since(last_advance).as_millis() > 100 {
                 time = time + 1;
-                last = Instant::now();
                 input.advance_to(time);
+                last_advance = Instant::now();
+            }
+            if Instant::now().duration_since(last_gossip).as_millis() > 10000 {
+                // Use RtUnspecified to signal gossip
+                let gossip_req = KeyRequest {
+                    r#type: 0,
+                    tuples: Vec::new(),
+                    response_address: String::from(""),
+                    request_id: String::from(""),
+                };
+
+                let mut buf: Vec<u8> = Vec::new();
+                gossip_req.encode(&mut buf).unwrap();
+                input.send(buf);
+                last_gossip = Instant::now();
             }
             worker.step();
 
@@ -209,14 +231,15 @@ fn process_get(kvs: &LWWKVS, req: KeyRequest) -> KeyResponse {
 }
 
 
-fn process_put(kvs: &mut Lattice<LWWKVS, MapUnionMerge>, req: KeyRequest) -> KeyResponse {
+fn process_put(kvs: &mut Lattice<LWWKVS, MapUnionMerge>, cache: &mut Lattice<LWWKVS, MapUnionMerge>, req: KeyRequest) -> KeyResponse {
     let mut resp_tuples: Vec<KeyTuple> = Vec::new();
     for key_tuple in req.tuples {
         let lww_val: LwwValue = prost::Message::decode(key_tuple.payload.as_slice()).unwrap();
         let mut map = HashMap::new();
         map.insert(key_tuple.key.clone(), Lattice::new(lww_val));
         let single_kvs: Lattice<LWWKVS, MapUnionMerge> = Lattice::new(map);
-        kvs.merge(single_kvs);
+        kvs.merge(single_kvs.clone());
+        cache.merge(single_kvs);
         
         // TODO: Could we send back an empty string so that we don't need to clone tuple key
         resp_tuples.push(KeyTuple {
